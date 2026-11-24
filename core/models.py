@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-core/models.py - Canonical data structures for RBC-C4ISR v2.1:
+core/models.py - Canonical data structures for bayes-track-core:
 Observation, Track, SectorState, KillChainState, and local tangent plane (ENU)
 coordinate transformations anchored at Ukraine reference meridian (49.5° N, 30.0° E).
 """
@@ -72,14 +72,14 @@ DEFAULT_AIRSPEED_KMH: Dict[str, float] = {
 
 # Default measurement error standard deviation sigma_r (km) by source (SDD Section 3.2)
 SOURCE_SIGMA_R_KM: Dict[str, float] = {
-    "api_mapa_ua": 5.0,
-    "api_neptun_threats": 8.0,
-    "api_neptun_messages": 10.0,
-    "tg_kpszsu": 12.0,
-    "tg_vanek_nikolaev": 9.0,
-    "tg_war_monitor": 10.0,
-    "tg_ppo_vinnytsia": 6.0,
-    "tg_vinnytsiarealll": 6.0,
+    "sensor_ext_1": 5.0,
+    "feed_primary_a": 8.0,
+    "feed_primary_b": 10.0,
+    "obs_national_1": 12.0,
+    "obs_sector_1": 9.0,
+    "obs_sector_2": 10.0,
+    "obs_region_1": 6.0,
+    "obs_region_2": 6.0,
     "tg_zhytomyr_operative": 6.0,
 }
 
@@ -90,7 +90,7 @@ class Observation:
     timestamp: float
     lat: float
     lon: float
-    source_id: str = "api_mapa_ua"
+    source_id: str = "sensor_ext_1"
     threat_class: str = "UAV_PROP"
     subkind: Optional[str] = None        # e.g. 'decoy', 'drone_piston', 'drone_jet', 'kalibr', 'x101'
     heading_deg: Optional[float] = None  # [0..360) clockwise from North

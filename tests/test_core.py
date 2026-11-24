@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from core.content_hash_cache import load_with_content_hash
 from core.imm_ekf import BatchIMMEKF
 from core.models import Observation, enu_to_wgs84, wgs84_to_enu
+from core.yager_dempster import YagerDempsterFusion, compute_echo_novelty_factor
 import api.auth as auth_mod
 
 V_KMS = 185.0 / 3600.0
@@ -184,3 +185,26 @@ def test_zero_trust_proxy_auth_and_rate_limit(tmp_path, monkeypatch):
     assert client.get("/protected", headers=hdrs).status_code == 200
     assert client.get("/protected", headers=hdrs).status_code == 200
     assert client.get("/protected", headers=hdrs).status_code == 429
+
+
+def test_yager_dempster_normal_and_high_conflict():
+    # Consistent threat observations increase m_threat with zero conflict
+    m_t, m_c, m_u, k_low = YagerDempsterFusion.combine_two_bpa((0.7, 0.0, 0.3), (0.6, 0.0, 0.4))
+    assert k_low == pytest.approx(0.0)
+    assert m_t > 0.85
+    assert m_t + m_c + m_u == pytest.approx(1.0)
+
+    # Strong contradiction routes conflict K into ignorance m(Theta) without Zadeh singularity
+    m_t2, m_c2, m_u2, k_high = YagerDempsterFusion.combine_two_bpa((0.95, 0.0, 0.05), (0.0, 0.95, 0.05))
+    assert k_high == pytest.approx(0.9025)
+    assert m_u2 > 0.90
+    assert m_t2 + m_c2 + m_u2 == pytest.approx(1.0)
+
+
+def test_yager_echo_novelty_suppression():
+    # Correlated rapid repost (< 90s) is discounted to floor 0.20
+    alpha_echo = compute_echo_novelty_factor(30.0, "obs_region_1", "obs_region_2", same_h3_or_locality=True)
+    assert alpha_echo == pytest.approx(0.20)
+    # Report outside 180s window has full novelty 1.0
+    alpha_fresh = compute_echo_novelty_factor(240.0, "obs_region_1", "obs_region_2", same_h3_or_locality=True)
+    assert alpha_fresh == pytest.approx(1.0)

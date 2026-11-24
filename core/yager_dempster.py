@@ -10,18 +10,18 @@ from typing import Dict, List, Tuple, Optional, Any
 from config.settings import ECHO_SUPPRESSION_WINDOW_SEC, ECHO_NOVELTY_DISCOUNT
 
 # Pairwise Source Overlap Matrix O_ij in [0.0 .. 1.0]
-# Reflects shared regional/national OSINT feeder channels between aggregators
+# Models shared upstream feeder overlap between correlated observer channels
 SOURCE_OVERLAP_INDEX: Dict[Tuple[str, str], float] = {
-    ("api_neptun_threats", "api_neptun_messages"): 0.85,
-    ("api_neptun_messages", "tg_ppo_vinnytsia"): 0.75,
-    ("api_neptun_messages", "tg_vinnytsiarealll"): 0.70,
-    ("api_neptun_messages", "tg_vanek_nikolaev"): 0.65,
-    ("api_neptun_messages", "tg_war_monitor"): 0.65,
-    ("tg_ppo_vinnytsia", "tg_vinnytsiarealll"): 0.80,
-    ("tg_vanek_nikolaev", "tg_war_monitor"): 0.60,
-    ("api_mapa_ua", "api_neptun_threats"): 0.35,
-    ("tg_kpszsu", "tg_vanek_nikolaev"): 0.30,
-    ("tg_kpszsu", "api_mapa_ua"): 0.20,
+    ("feed_primary_a", "feed_primary_b"): 0.85,
+    ("feed_primary_b", "obs_region_1"): 0.75,
+    ("feed_primary_b", "obs_region_2"): 0.70,
+    ("feed_primary_b", "obs_sector_1"): 0.65,
+    ("feed_primary_b", "obs_sector_2"): 0.65,
+    ("obs_region_1", "obs_region_2"): 0.80,
+    ("obs_sector_1", "obs_sector_2"): 0.60,
+    ("sensor_ext_1", "feed_primary_a"): 0.35,
+    ("obs_national_1", "obs_sector_1"): 0.30,
+    ("obs_national_1", "sensor_ext_1"): 0.20,
 }
 
 
@@ -33,8 +33,8 @@ def get_source_overlap(source_a: str, source_b: str) -> float:
         return SOURCE_OVERLAP_INDEX[(source_a, source_b)]
     if (source_b, source_a) in SOURCE_OVERLAP_INDEX:
         return SOURCE_OVERLAP_INDEX[(source_b, source_a)]
-    # Default overlap between two Telegram regional monitors vs independent radar API
-    if source_a.startswith("tg_") and source_b.startswith("tg_"):
+    # Default overlap between two correlated regional observers vs independent sensor API
+    if source_a.startswith("obs_") and source_b.startswith("obs_"):
         return 0.55
     return 0.15
 
@@ -134,7 +134,7 @@ class YagerDempsterFusion:
         prev_h3: Optional[str] = None
 
         for ev in sorted_ev:
-            src = str(ev.get("source_id", "api_mapa_ua"))
+            src = str(ev.get("source_id", "sensor_ext_1"))
             ts = float(ev.get("timestamp", 0.0))
             w_base = max(0.05, min(0.98, float(ev.get("base_trust", 0.75))))
             is_clear = bool(ev.get("is_clear", False))

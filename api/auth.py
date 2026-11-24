@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-api/auth.py - Multi-tier authentication & rate limiting for RBC-C4ISR outgoing API.
+api/auth.py - Multi-tier zero-trust API key authentication & rate limiting for bayes-track-core.
 Direct localhost requests (without Cloudflare/reverse-proxy headers) bypass token checks.
-External clients authenticate via X-API-Key, Bearer token, or ?api_key= query param.
+External clients authenticate via X-API-Key, Bearer token, cookie, or ?api_key= query param.
 """
 import os
 import json

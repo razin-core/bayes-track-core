@@ -181,7 +181,7 @@ class BatchIMMEKF:
             track_uuid=track_uuid,
             threat_class=obs.threat_class,
             subkind=obs.subkind or ("decoy" if obs.is_decoy else None),
-            status="CONFIRMED" if obs.source_id in ("api_mapa_ua", "api_neptun_threats") else "TENTATIVE",
+            status="CONFIRMED" if obs.source_id in ("sensor_ext_1", "feed_primary_a") else "TENTATIVE",
             imm_mode=MODE_NAMES[dom_idx],
             count=max(1, obs.target_count),
             lat=obs.lat,
@@ -501,7 +501,7 @@ class BatchIMMEKF:
                 S_inv_eff = np.array([[S_eff[1, 1], -S_eff[0, 1]], [-S_eff[1, 0], S_eff[0, 0]]], dtype=np.float64) / det_eff
             K = Pm[:, :2] @ S_inv_eff
             if is_stationary_bal:
-                # Repeated static destination coordinates (e.g., api_mapa_ua pinning) must not
+                # Repeated static destination coordinates (e.g., sensor_ext_1 pinning) must not
                 # pull ballistic velocity downward or rotate heading backward as the prior passes.
                 K[2:, :] = 0.0
             elif r_mult > 1.0:
@@ -610,7 +610,7 @@ class BatchIMMEKF:
         elif obs.threat_class == "UAV_PROP" and trk.threat_class != "UAV_JET" and (obs.speed_kmh is None or obs.speed_kmh < 260.0):
             trk.threat_class = "UAV_PROP"
             trk.subkind = obs.subkind or "drone_piston"
-        elif obs.threat_class == "UAV_PROP" and trk.threat_class == "UAV_JET" and obs.source_id == "api_mapa_ua" and obs.speed_kmh is not None and obs.speed_kmh < 230.0:
+        elif obs.threat_class == "UAV_PROP" and trk.threat_class == "UAV_JET" and obs.source_id == "sensor_ext_1" and obs.speed_kmh is not None and obs.speed_kmh < 230.0:
             trk.threat_class = "UAV_PROP"
             trk.subkind = obs.subkind or "drone_piston"
         elif obs.is_decoy and trk.threat_class != "UAV_JET":
