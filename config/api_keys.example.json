@@ -1,0 +1,10 @@
+{
+  "keys": {
+    "example_readonly_key_0000000000": {
+      "owner": "Example Read-Only Client",
+      "role": "readonly",
+      "rate_limit_rpm": 60,
+      "enabled": true
+    }
+  }
+}
