@@ -13,7 +13,7 @@ from typing import Annotated, Optional
 from fastapi import Depends, Request, HTTPException, Security, status
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 
-API_KEYS_PATH = os.environ.get("BAYES_TRACK_API_KEYS_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_keys.example.json"))
+API_KEYS_PATH = os.environ.get("BAYES_TRACK_API_KEYS_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_keys.json"))
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
@@ -78,11 +78,11 @@ async def verify_api_key(
     header_key: Optional[str] = Security(api_key_header),
     bearer: Optional[HTTPAuthorizationCredentials] = Security(bearer_auth)
 ) -> dict:
-    # 1. Direct Localhost auto-bypass (Telegram bot & internal CLI)
+    # 1. Direct Localhost auto-bypass (internal CLI / local services)
     if is_direct_localhost(request):
         return {
             "key": "internal_localhost",
-            "owner": "Local Service (Telegram Bot / Local CLI)",
+            "owner": "Local Service (Internal CLI)",
             "role": "internal",
             "rate_limit_rpm": 999999
         }
@@ -94,7 +94,7 @@ async def verify_api_key(
     if not token:
         token = request.query_params.get("api_key")
     if not token:
-        token = request.cookies.get("rbc_api_key")
+        token = request.cookies.get("btc_api_key")
 
     if not token:
         raise HTTPException(
