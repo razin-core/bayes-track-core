@@ -8,7 +8,8 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from core.content_hash_cache import load_with_content_hash
+from core.content_hash_cache import compute_bundle_hash, load_with_content_hash
+import core.content_hash_cache as cache_mod
 from core.imm_ekf import BatchIMMEKF
 from core.models import Observation, enu_to_wgs84, wgs84_to_enu
 from core.yager_dempster import YagerDempsterFusion, compute_echo_novelty_factor
@@ -131,12 +132,45 @@ def test_content_hash_cache_roundtrip(tmp_path):
     assert e1.payload == {"score": 42}
     assert e2.payload == {"score": 42}
     assert calls["n"] == 1  # second call served from SHA-256 content cache
+    bundle_h1 = compute_bundle_hash([src])
 
-    # Mutating content invalidates automatically
+    # Mutating content with identical byte length (13 bytes) invalidates immediately without sleep
     src.write_text('{"score": 99}', encoding="utf-8")
+    bundle_h2 = compute_bundle_hash([src])
+    assert bundle_h2 != bundle_h1
+
     e3 = load_with_content_hash(src, loader=_loader)
     assert e3.payload == {"score": 99}
+    assert e3.file_hash != e1.file_hash
     assert calls["n"] == 2
+
+
+def test_content_hash_cache_large_file_stat_fast_path(tmp_path, monkeypatch):
+    large = tmp_path / "large.json"
+    payload = {"blob": "x" * 70_000}
+    large.write_text(json.dumps(payload), encoding="utf-8")
+    # Age mtime by 2 seconds so the file is outside the 100 ms racy window
+    old_ts = large.stat().st_mtime - 2.0
+    os.utime(large, (old_ts, old_ts))
+
+    calls = {"n": 0}
+
+    def _loader(p):
+        calls["n"] += 1
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    e1 = load_with_content_hash(large, loader=_loader)
+    assert calls["n"] == 1
+
+    # On second read, stat() fast-path must serve the cached entry without rehashing disk
+    def _forbid_rehash(_p):
+        raise AssertionError("compute_file_hash should not be called on aged unchanged >64KB file")
+
+    monkeypatch.setattr(cache_mod, "compute_file_hash", _forbid_rehash)
+    e2 = load_with_content_hash(large, loader=_loader)
+    assert e2 is e1
+    assert calls["n"] == 1
+    assert compute_bundle_hash([large]) == compute_bundle_hash([large])
 
 
 def test_zero_trust_proxy_auth_and_rate_limit(tmp_path, monkeypatch):

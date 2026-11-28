@@ -10,12 +10,15 @@ Follows the Content-Hash File Cache Pattern:
 """
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional, Union
 
 _HASH_CHUNK_SIZE = 65536  # 64 KB chunks
+_SMALL_FILE_HASH_THRESHOLD_BYTES = _HASH_CHUNK_SIZE  # 64 KB: hash directly in a single chunk
+_RACY_MTIME_WINDOW_NS = 100_000_000  # 100 ms coarse-clock mtime race guard (racy-git style)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +29,8 @@ class FileCacheEntry:
     size_bytes: int
     payload: Any
     loaded_ts: float
+    ctime_ns: int = 0
+    inode: int = 0
 
 
 # Keyed by canonical path -> last observed FileCacheEntry, plus hash -> payload for move/rename hits
@@ -49,15 +54,36 @@ def compute_file_hash(path: Union[str, Path]) -> str:
     return sha256.hexdigest()
 
 
+def _can_reuse_stat_fast_path(
+    prev: Optional[FileCacheEntry],
+    st: os.stat_result,
+    now_ns: int,
+) -> bool:
+    """Returns True only when stat() metadata is safe to trust without rehashing."""
+    if prev is None:
+        return False
+    if st.st_size <= _SMALL_FILE_HASH_THRESHOLD_BYTES:
+        return False
+    if abs(now_ns - st.st_mtime_ns) < _RACY_MTIME_WINDOW_NS:
+        return False
+    return (
+        prev.mtime_ns == st.st_mtime_ns
+        and prev.ctime_ns == st.st_ctime_ns
+        and prev.size_bytes == st.st_size
+        and prev.inode == st.st_ino
+    )
+
+
 def compute_bundle_hash(paths: Iterable[Union[str, Path]]) -> str:
     """Computes a combined SHA-256 digest across multiple files (missing files encoded deterministically)."""
     combined = hashlib.sha256()
+    now_ns = time.time_ns()
     for raw_p in paths:
         p = Path(raw_p)
         if p.is_file():
             st = p.stat()
             prev = _PATH_INDEX.get(str(p))
-            if prev is not None and prev.mtime_ns == st.st_mtime_ns and prev.size_bytes == st.st_size:
+            if _can_reuse_stat_fast_path(prev, st, now_ns):
                 digest = prev.file_hash
             else:
                 digest = compute_file_hash(p)
@@ -91,12 +117,14 @@ def load_with_content_hash(
             size_bytes=st.st_size,
             payload=loader(p),
             loaded_ts=time.time(),
+            ctime_ns=st.st_ctime_ns,
+            inode=st.st_ino,
         )
 
     st = p.stat()
     key = str(p)
     prev = _PATH_INDEX.get(key)
-    if prev is not None and prev.mtime_ns == st.st_mtime_ns and prev.size_bytes == st.st_size:
+    if _can_reuse_stat_fast_path(prev, st, time.time_ns()):
         _CACHE_STATS["hits"] += 1
         return prev
 
@@ -110,6 +138,8 @@ def load_with_content_hash(
             size_bytes=st.st_size,
             payload=_HASH_STORE[f_hash],
             loaded_ts=time.time(),
+            ctime_ns=st.st_ctime_ns,
+            inode=st.st_ino,
         )
         _PATH_INDEX[key] = entry
         return entry
@@ -126,6 +156,8 @@ def load_with_content_hash(
         size_bytes=st.st_size,
         payload=data,
         loaded_ts=time.time(),
+        ctime_ns=st.st_ctime_ns,
+        inode=st.st_ino,
     )
     _PATH_INDEX[key] = entry
     return entry
