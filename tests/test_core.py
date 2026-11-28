@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from core.content_hash_cache import compute_bundle_hash, load_with_content_hash
 import core.content_hash_cache as cache_mod
 from core.imm_ekf import BatchIMMEKF
-from core.models import Observation, enu_to_wgs84, wgs84_to_enu
+from core.models import Observation, SOURCE_SIGMA_R_KM, Track, enu_to_wgs84, wgs84_to_enu
 from core.yager_dempster import YagerDempsterFusion, compute_echo_novelty_factor
 import api.auth as auth_mod
 
@@ -242,3 +242,94 @@ def test_yager_echo_novelty_suppression():
     # Report outside 180s window has full novelty 1.0
     alpha_fresh = compute_echo_novelty_factor(240.0, "obs_region_1", "obs_region_2", same_h3_or_locality=True)
     assert alpha_fresh == pytest.approx(1.0)
+
+
+def test_auth_ipv6_forwarded_and_fail_closed_keys(tmp_path, monkeypatch):
+    keys_file = tmp_path / "api_keys.json"
+    keys_file.write_text(
+        json.dumps(
+            {
+                "keys": {
+                    "valid_key_abc": {
+                        "owner": "UnitTest",
+                        "role": "readonly",
+                        "rate_limit_rpm": 10,
+                        "enabled": True,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(auth_mod, "API_KEYS_PATH", str(keys_file))
+    auth_mod._keys_cache = {}
+    auth_mod._keys_mtime = 0
+    auth_mod._rate_limits.clear()
+
+    app = FastAPI()
+
+    @app.get("/protected")
+    async def protected(meta=Depends(auth_mod.verify_api_key)):
+        return {"owner": meta["owner"]}
+
+    local_client = TestClient(app, client=("::1", 50000))
+
+    # Direct IPv6 localhost with bracketed Host header bypasses key check
+    r_ipv6 = local_client.get("/protected", headers={"Host": "[::1]:8000"})
+    assert r_ipv6.status_code == 200
+    assert r_ipv6.json()["owner"] == "Local Service (Internal CLI)"
+
+    # RFC 7239 Forwarded header blocks localhost bypass -> 401
+    r_fwd = local_client.get(
+        "/protected",
+        headers={"Host": "[::1]:8000", "Forwarded": "for=203.0.113.10"},
+    )
+    assert r_fwd.status_code == 401
+
+    # Valid key succeeds initially, then corrupting api_keys.json fails closed -> 403
+    ext_hdrs = {"Host": "api.example.com", "Forwarded": "for=203.0.113.10", "X-API-Key": "valid_key_abc"}
+    assert local_client.get("/protected", headers=ext_hdrs).status_code == 200
+    keys_file.write_text("{corrupted json", encoding="utf-8")
+    assert local_client.get("/protected", headers=ext_hdrs).status_code == 403
+
+
+def test_yager_interleaved_echo_suppression():
+    # Interleaving an unrelated H3 cell must not defeat echo suppression for H3 cell A
+    interleaved = [
+        {"source_id": "obs_region_1", "timestamp": 1000.0, "base_trust": 0.70, "is_clear": False, "h3_cell": "h3_cell_a"},
+        {"source_id": "sensor_ext_1", "timestamp": 1010.0, "base_trust": 0.40, "is_clear": False, "h3_cell": "h3_cell_b"},
+        {"source_id": "obs_region_2", "timestamp": 1020.0, "base_trust": 0.70, "is_clear": False, "h3_cell": "h3_cell_a"},
+    ]
+    independent = [
+        {"source_id": "obs_region_1", "timestamp": 1000.0, "base_trust": 0.70, "is_clear": False, "h3_cell": "h3_cell_a"},
+        {"source_id": "sensor_ext_1", "timestamp": 1010.0, "base_trust": 0.40, "is_clear": False, "h3_cell": "h3_cell_b"},
+        {"source_id": "obs_region_2", "timestamp": 1020.0, "base_trust": 0.70, "is_clear": False, "h3_cell": "h3_cell_c"},
+    ]
+    res_interleaved = YagerDempsterFusion.fuse_evidence_sequence(interleaved)
+    res_independent = YagerDempsterFusion.fuse_evidence_sequence(independent)
+    assert res_interleaved["m_threat"] < res_independent["m_threat"]
+
+
+def test_imm_lazy_init_and_ctrv_large_omega_covariance():
+    ekf = BatchIMMEKF()
+    raw_trk = Track(track_uuid="raw", lat=START[0], lon=START[1], last_updated_ts=T0)
+    px, py = wgs84_to_enu(*START)
+    # Direct update without prior predict_batch must lazily initialize mode tensors
+    ekf.update_track_with_obs(raw_trk, _obs_at(T0 + 10.0, px + 0.5, py + 0.5, 45.0))
+    assert raw_trk.mode_states is not None
+    assert np.all(np.isfinite(raw_trk.mode_covs))
+
+    # Large turn rate CTRV prediction must keep covariance finite and symmetric
+    raw_trk.mode_states[1, 4] = 0.03
+    ekf.predict_batch([raw_trk], raw_trk.last_updated_ts + 60.0)
+    P_ctrv = raw_trk.mode_covs[1]
+    assert np.all(np.isfinite(P_ctrv))
+    assert np.allclose(P_ctrv, P_ctrv.T, atol=1e-9)
+
+
+def test_models_sanitized_and_observation_no_broken_properties():
+    assert all(k.startswith(("sensor_", "feed_", "obs_")) for k in SOURCE_SIGMA_R_KM)
+    assert all(not k.startswith("tg_") for k in SOURCE_SIGMA_R_KM)
+    obs = Observation(obs_id="o1", timestamp=T0, lat=START[0], lon=START[1])
+    for attr in ("course_rad", "ellipse_major_km", "ellipse_minor_km"):
+        assert not hasattr(obs, attr)

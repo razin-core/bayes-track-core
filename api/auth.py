@@ -13,6 +13,8 @@ from typing import Annotated, Optional
 from fastapi import Depends, Request, HTTPException, Security, status
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 
+from core.content_hash_cache import load_with_content_hash
+
 API_KEYS_PATH = os.environ.get("BAYES_TRACK_API_KEYS_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_keys.json"))
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -22,22 +24,29 @@ _keys_cache = {}
 _keys_mtime = 0
 _rate_limits = defaultdict(list)  # key -> list of request timestamps
 
-PROXY_HEADERS = ("cf-connecting-ip", "cf-ray", "x-forwarded-for", "x-real-ip", "x-forwarded-host", "x-forwarded-proto")
+PROXY_HEADERS = ("forwarded", "cf-connecting-ip", "cf-ray", "x-forwarded-for", "x-real-ip", "x-forwarded-host", "x-forwarded-proto")
 
 def load_keys() -> dict:
     global _keys_cache, _keys_mtime
     if not os.path.exists(API_KEYS_PATH):
+        _keys_cache = {}
+        _keys_mtime = 0
         return {}
     try:
-        mtime = os.path.getmtime(API_KEYS_PATH)
-        if mtime > _keys_mtime:
-            with open(API_KEYS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                _keys_cache = data.get("keys", {})
-                _keys_mtime = mtime
+        entry = load_with_content_hash(API_KEYS_PATH)
+        data = entry.payload
+        if not isinstance(data, dict):
+            raise ValueError("Invalid api_keys.json root object")
+        keys = data.get("keys", {})
+        if not isinstance(keys, dict):
+            raise ValueError("Invalid keys mapping in api_keys.json")
+        _keys_cache = keys
+        _keys_mtime = entry.mtime_ns
+        return _keys_cache
     except Exception:
-        pass
-    return _keys_cache
+        _keys_cache = {}
+        _keys_mtime = 0
+        return {}
 
 
 def match_api_key(token: Optional[str]) -> Optional[tuple[str, dict]]:
@@ -65,8 +74,13 @@ def is_direct_localhost(request_or_ws) -> bool:
     if not (client_host in ("127.0.0.1", "::1", "localhost") or client_host.startswith("127.")):
         return False
     headers = request_or_ws.headers
-    host_hdr = headers.get("host", "").split(":")[0].lower()
-    if host_hdr not in ("127.0.0.1", "localhost", "::1", ""):
+    raw_host = headers.get("host", "").strip()
+    if raw_host.startswith("["):
+        end_idx = raw_host.find("]")
+        host_hdr = raw_host[1:end_idx].lower() if end_idx != -1 else ""
+    else:
+        host_hdr = raw_host.split(":")[0].lower()
+    if host_hdr not in ("127.0.0.1", "localhost", "::1"):
         return False
     for ph in PROXY_HEADERS:
         if ph in headers:
@@ -111,7 +125,7 @@ async def verify_api_key(
     matched_key, meta = matched
 
     # 3. Sliding-window rate limiter (60s window) with bounded state pruning
-    now = time.time()
+    now = time.monotonic()
     rpm_limit = meta.get("rate_limit_rpm", 120)
     if len(_rate_limits) > 256:
         stale_keys = [rk for rk, ts_list in _rate_limits.items() if not ts_list or (now - ts_list[-1] >= 60)]

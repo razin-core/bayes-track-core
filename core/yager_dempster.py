@@ -129,9 +129,7 @@ class YagerDempsterFusion:
         curr_m: Tuple[float, float, float] = (0.0, 0.0, 1.0)
         cumulative_conflict = 0.0
 
-        prev_ts: Optional[float] = None
-        prev_src: Optional[str] = None
-        prev_h3: Optional[str] = None
+        recent_events: List[Tuple[float, str, str]] = []
 
         for ev in sorted_ev:
             src = str(ev.get("source_id", "sensor_ext_1"))
@@ -140,11 +138,21 @@ class YagerDempsterFusion:
             is_clear = bool(ev.get("is_clear", False))
             h3_cell = str(ev.get("h3_cell", ""))
 
-            if prev_ts is not None and prev_src is not None:
-                same_loc = (h3_cell == prev_h3) if (h3_cell and prev_h3) else True
-                alpha = compute_echo_novelty_factor(ts - prev_ts, src, prev_src, same_loc)
-            else:
-                alpha = 1.0
+            recent_events = [
+                (p_ts, p_src, p_h3)
+                for p_ts, p_src, p_h3 in recent_events
+                if 0.0 <= ts - p_ts < ECHO_SUPPRESSION_WINDOW_SEC
+            ]
+            alpha = 1.0
+            for p_ts, p_src, p_h3 in recent_events:
+                if h3_cell and p_h3:
+                    same_loc = h3_cell == p_h3
+                elif not h3_cell and not p_h3:
+                    same_loc = src == p_src
+                else:
+                    same_loc = False
+                if same_loc:
+                    alpha = min(alpha, compute_echo_novelty_factor(ts - p_ts, src, p_src, True))
 
             w_eff = w_base * alpha
             if is_clear:
@@ -156,9 +164,7 @@ class YagerDempsterFusion:
             curr_m = (t12, c12, u12)
             cumulative_conflict = max(cumulative_conflict, k_step)
 
-            prev_ts = ts
-            prev_src = src
-            prev_h3 = h3_cell
+            recent_events.append((ts, src, h3_cell))
 
         ellipse_scale = 1.0 + 1.5 * cumulative_conflict
         return {

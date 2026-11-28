@@ -209,6 +209,18 @@ class BatchIMMEKF:
         )
         return trk
 
+    @staticmethod
+    def _ensure_mode_tensors(trk: Track) -> None:
+        """Lazily initializes 3-mode IMM state, covariance, and probability tensors."""
+        if trk.mode_states is None or trk.mode_covs is None or trk.mode_probs is None:
+            px, py = wgs84_to_enu(trk.lat, trk.lon)
+            v_kms = max(0.01, trk.ground_speed_kmh / 3600.0)
+            psi = math.radians(trk.course_deg % 360.0)
+            x0 = np.array([px, py, v_kms, psi, trk.turn_rate_rad_s], dtype=np.float64)
+            trk.mode_states = np.tile(x0, (3, 1))
+            trk.mode_covs = np.tile(np.diag([36.0, 36.0, 2e-4, 0.06, 4e-6]), (3, 1, 1))
+            trk.mode_probs = np.array([0.80, 0.15, 0.05], dtype=np.float64)
+
     def predict_batch(
         self,
         tracks: List[Track],
@@ -226,14 +238,7 @@ class BatchIMMEKF:
 
         # Ensure internal tensors are initialized
         for t in tracks:
-            if t.mode_states is None or t.mode_covs is None or t.mode_probs is None:
-                px, py = wgs84_to_enu(t.lat, t.lon)
-                v_kms = max(0.01, t.ground_speed_kmh / 3600.0)
-                psi = math.radians(t.course_deg % 360.0)
-                x0 = np.array([px, py, v_kms, psi, t.turn_rate_rad_s], dtype=np.float64)
-                t.mode_states = np.tile(x0, (3, 1))
-                t.mode_covs = np.tile(np.diag([36.0, 36.0, 2e-4, 0.06, 4e-6]), (3, 1, 1))
-                t.mode_probs = np.array([0.80, 0.15, 0.05], dtype=np.float64)
+            self._ensure_mode_tensors(t)
 
         # Stack batch tensors: X shape (N, 3, 5), P shape (N, 3, 5, 5), mu shape (N, 3)
         X = np.stack([t.mode_states for t in tracks], axis=0)
@@ -341,12 +346,22 @@ class BatchIMMEKF:
         F1 = np.broadcast_to(np.eye(5, dtype=np.float64), (n, 5, 5)).copy()
         sin_p1 = np.sin(psi1)
         cos_p1 = np.cos(psi1)
-        F1[:, 0, 2] = sin_p1 * dt
-        F1[:, 0, 3] = v1 * cos_p1 * dt
-        F1[:, 0, 4] = 0.5 * v1 * cos_p1 * (dt ** 2)
-        F1[:, 1, 2] = cos_p1 * dt
-        F1[:, 1, 3] = -v1 * sin_p1 * dt
-        F1[:, 1, 4] = -0.5 * v1 * sin_p1 * (dt ** 2)
+        sin_p1_new = np.sin(psi1_new)
+        cos_p1_new = np.cos(psi1_new)
+        F1[:, 0, 2] = np.where(small_omg, sin_p1 * dt, (-cos_p1_new + cos_p1) / omg_safe)
+        F1[:, 0, 3] = np.where(small_omg, v1 * cos_p1 * dt, (v1 / omg_safe) * (sin_p1_new - sin_p1))
+        F1[:, 0, 4] = np.where(
+            small_omg,
+            0.5 * v1 * cos_p1 * (dt ** 2),
+            v1 * (omg_safe * dt * sin_p1_new + cos_p1_new - cos_p1) / (omg_safe ** 2),
+        )
+        F1[:, 1, 2] = np.where(small_omg, cos_p1 * dt, (sin_p1_new - sin_p1) / omg_safe)
+        F1[:, 1, 3] = np.where(small_omg, -v1 * sin_p1 * dt, (v1 / omg_safe) * (cos_p1_new - cos_p1))
+        F1[:, 1, 4] = np.where(
+            small_omg,
+            -0.5 * v1 * sin_p1 * (dt ** 2),
+            v1 * (omg_safe * dt * cos_p1_new - sin_p1_new + sin_p1) / (omg_safe ** 2),
+        )
         F1[:, 3, 4] = dt
 
         # --- Mode 2: Mode_LOITER (Acoustic orbiting, sigma^2_pos = 18.0 km^2/min) ---
@@ -444,6 +459,7 @@ class BatchIMMEKF:
         Updates a single track's 3-mode IMM-EKF state with a matched Observation.
         Uses Joseph-form covariance update and analytical 2x2/3x3 innovation inverse.
         """
+        self._ensure_mode_tensors(trk)
         zx, zy = wgs84_to_enu(obs.lat, obs.lon)
         sig_r2 = obs.sigma_r_km ** 2
         is_ballistic = trk.threat_class == "BALLISTIC"

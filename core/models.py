@@ -80,7 +80,6 @@ SOURCE_SIGMA_R_KM: Dict[str, float] = {
     "obs_sector_2": 10.0,
     "obs_region_1": 6.0,
     "obs_region_2": 6.0,
-    "tg_zhytomyr_operative": 6.0,
 }
 
 
@@ -115,19 +114,6 @@ class Observation:
     @property
     def y_km(self) -> float:
         return (self.lat - ENU_LAT0_DEG) * KM_PER_DEG_LAT
-
-    @property
-    def course_rad(self) -> float:
-        return math.radians(self.course_deg % 360.0)
-
-    @property
-    def ellipse_minor_km(self) -> float:
-        return float(self.cov_minor_km * self.ellipse_scale)
-
-    @property
-    def ellipse_major_km(self) -> float:
-        return float(self.cov_major_km * self.ellipse_scale)
-
 
     @property
     def sigma_r_km(self) -> float:
